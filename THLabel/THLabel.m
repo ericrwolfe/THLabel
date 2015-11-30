@@ -195,9 +195,7 @@
 	}
 	
     if (self.image == nil) {
-        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
-            [self render];
-        });
+        [self renderInBackground];
         return;
     }
     
@@ -210,6 +208,12 @@
     CGContextScaleCTM(context, 1.0, -1.0);
     
     CGContextDrawImage(context, imageRect, image.CGImage);
+}
+
+- (void)renderInBackground {
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        [self render];
+    });
 }
 
 - (void)render {
