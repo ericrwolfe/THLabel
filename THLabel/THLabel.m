@@ -53,6 +53,14 @@
 
 #import "THLabel.h"
 
+@interface THLabel () {
+    BOOL isRendering;
+}
+
+@property (nonatomic, strong) UIImage *image;
+
+@end
+
 @implementation THLabel
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -186,242 +194,279 @@
 		return;
 	}
 	
-	// -------
-	// Determine what has to be drawn.
-	// -------
-	
-	BOOL hasShadow = [self hasShadow];
-	BOOL hasInnerShadow = [self hasInnerShadow];
-	BOOL hasStroke = [self hasStroke];
-	BOOL hasGradient = [self hasGradient];
-	BOOL hasFadeTruncating = [self hasFadeTruncating];
-	BOOL needsMask = hasGradient || (hasStroke && self.strokePosition == THLabelStrokePositionInside) || hasInnerShadow;
-	
-	// -------
-	// Step 1: Begin new drawing context, where we will apply all our styles.
-	// -------
-	
-	UIGraphicsBeginImageContextWithOptions(rect.size, NO, 0.0);
-	CGContextRef context = UIGraphicsGetCurrentContext();
-	CGImageRef alphaMask = NULL;
-	CGRect textRect;
-	CTFrameRef frameRef = [self frameRefFromSize:self.bounds.size textRectOutput:&textRect];
-	
-	// Invert everything, because CG works with an inverted coordinate system.
-	CGContextTranslateCTM(context, 0.0, CGRectGetHeight(rect));
-	CGContextScaleCTM(context, 1.0, -1.0);
-	
-	// -------
-	// Step 2: Prepare mask.
-	// -------
-	
-	if (needsMask) {
-		CGContextSaveGState(context);
-		
-		// Draw alpha mask.
-		if (hasStroke) {
-			// Text needs invisible stroke for consistent character glyph widths.
-			CGContextSetTextDrawingMode(context, kCGTextFillStroke);
-			CGContextSetLineWidth(context, [self strokeSizeDependentOnStrokePosition]);
-			CGContextSetLineJoin(context, kCGLineJoinRound);
-			[[UIColor clearColor] setStroke];
-		} else {
-			CGContextSetTextDrawingMode(context, kCGTextFill);
-		}
-		
-		[[UIColor whiteColor] setFill];
-		CTFrameDraw(frameRef, context);
-		
-		// Save alpha mask.
-		alphaMask = CGBitmapContextCreateImage(context);
-		
-		// Clear the content.
-		CGContextClearRect(context, rect);
-		
-		CGContextRestoreGState(context);
-	}
-	
-	// -------
-	// Step 3: Draw text normally, or with gradient.
-	// -------
-	
-	CGContextSaveGState(context);
-	
-	if (!hasGradient) {
-		// Draw text.
-		if (hasStroke) {
-			// Text needs invisible stroke for consistent character glyph widths.
-			CGContextSetTextDrawingMode(context, kCGTextFillStroke);
-			CGContextSetLineWidth(context, [self strokeSizeDependentOnStrokePosition]);
-			CGContextSetLineJoin(context, kCGLineJoinRound);
-			[[UIColor clearColor] setStroke];
-		} else {
-			CGContextSetTextDrawingMode(context, kCGTextFill);
-		}
-		
-		CTFrameDraw(frameRef, context);
-	} else {
-		// Clip the current context to alpha mask.
-		CGContextClipToMask(context, rect, alphaMask);
-		
-		// Invert back to draw the gradient correctly.
-		CGContextTranslateCTM(context, 0.0, CGRectGetHeight(rect));
-		CGContextScaleCTM(context, 1.0, -1.0);
-		
-		// Get gradient colors as CGColor.
-		NSMutableArray *gradientColors = [NSMutableArray arrayWithCapacity:self.gradientColors.count];
-		for (UIColor *color in self.gradientColors) {
-			[gradientColors addObject:(__bridge id)color.CGColor];
-		}
-		
-		// Create gradient.
-		CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
-		CGGradientRef gradient = CGGradientCreateWithColors(colorSpace, (__bridge CFArrayRef)gradientColors, NULL);
-		CGPoint startPoint = CGPointMake(textRect.origin.x + self.gradientStartPoint.x * CGRectGetWidth(textRect),
-										 textRect.origin.y + self.gradientStartPoint.y * CGRectGetHeight(textRect));
-		CGPoint endPoint = CGPointMake(textRect.origin.x + self.gradientEndPoint.x * CGRectGetWidth(textRect),
-									   textRect.origin.y + self.gradientEndPoint.y * CGRectGetHeight(textRect));
-		
-		// Draw gradient.
-		CGContextDrawLinearGradient(context, gradient, startPoint, endPoint, kCGGradientDrawsBeforeStartLocation | kCGGradientDrawsAfterEndLocation);
-		
-		// Clean up.
-		CGColorSpaceRelease(colorSpace);
-		CGGradientRelease(gradient);
-	}
-	
-	CGContextRestoreGState(context);
-	
-	// -------
-	// Step 4: Draw inner shadow.
-	// -------
-	
-	if (hasInnerShadow) {
-		CGContextSaveGState(context);
-		
-		// Clip the current context to alpha mask.
-		CGContextClipToMask(context, rect, alphaMask);
-		
-		// Invert to draw the inner shadow correctly.
-		CGContextTranslateCTM(context, 0.0, CGRectGetHeight(rect));
-		CGContextScaleCTM(context, 1.0, -1.0);
+    if (self.image == nil) {
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
+            [self render];
+        });
+        return;
+    }
+    
+    CGContextRef context = UIGraphicsGetCurrentContext();
+    CGContextClearRect(context, rect);
+    UIImage *image = self.image;
+    CGRect imageRect = CGRectMake(0, 0, image.size.width, image.size.height);
+    
+    CGContextTranslateCTM(context, 0, image.size.height);
+    CGContextScaleCTM(context, 1.0, -1.0);
+    
+    CGContextDrawImage(context, imageRect, image.CGImage);
+}
 
-		// Draw inner shadow.
-		CGImageRef shadowImage = [self inverseMaskFromAlphaMask:alphaMask withRect:rect];
-		CGContextSetShadowWithColor(context, self.innerShadowOffset, self.innerShadowBlur, self.innerShadowColor.CGColor);
-		CGContextSetBlendMode(context, kCGBlendModeDarken);
-		CGContextDrawImage(context, rect, shadowImage);
-		
-		// Clean up.
-		CGImageRelease(shadowImage);
-		
-		CGContextRestoreGState(context);
-	}
-
-	// -------
-	// Step 5: Draw stroke.
-	// -------
-	
-	if (hasStroke) {
-		CGContextSaveGState(context);
-		
-		CGContextSetTextDrawingMode(context, kCGTextStroke);
-		
-		CGImageRef image = NULL;
-		
-		if (self.strokePosition == THLabelStrokePositionOutside) {
-			// Create an image from the text.
-			image = CGBitmapContextCreateImage(context);
-		} else if (self.strokePosition == THLabelStrokePositionInside) {
-			// Clip the current context to alpha mask.
-			CGContextClipToMask(context, rect, alphaMask);
-		}
-		
-		// Draw stroke.
-		CGImageRef strokeImage = [self strokeImageWithRect:rect frameRef:frameRef strokeSize:[self strokeSizeDependentOnStrokePosition] strokeColor:self.strokeColor];
-		CGContextDrawImage(context, rect, strokeImage);
-		
-		if (self.strokePosition == THLabelStrokePositionOutside) {
-			// Draw the saved image over half of the stroke.
-			CGContextDrawImage(context, rect, image);
-		}
-		
-		// Clean up.
-		CGImageRelease(strokeImage);
-		CGImageRelease(image);
-		
-		CGContextRestoreGState(context);
-	}
-	
-	// -------
-	// Step 6: Draw shadow.
-	// -------
-	
-	if (hasShadow) {
-		CGContextSaveGState(context);
-		
-		// Create an image from the text.
-		CGImageRef image = CGBitmapContextCreateImage(context);
-		
-		// Clear the content.
-		CGContextClearRect(context, rect);
-		
-		// Set shadow attributes.
-		CGContextSetShadowWithColor(context, self.shadowOffset, self.shadowBlur, self.shadowColor.CGColor);
-		
-		// Draw the saved image, which throws off a shadow.
-		CGContextDrawImage(context, rect, image);
-		
-		// Clean up.
-		CGImageRelease(image);
-		
-		CGContextRestoreGState(context);
-	}
-	
-	// -------
-	// Step 7: Draw fade truncating.
-	// -------
-	
-	if (hasFadeTruncating) {
-		CGContextSaveGState(context);
-		
-		// Create an image from the text.
-		CGImageRef image = CGBitmapContextCreateImage(context);
-		
-		// Clear the content.
-		CGContextClearRect(context, rect);
-		
-		// Clip the current context to linear gradient mask.
-		CGImageRef linearGradientImage = [self linearGradientImageWithRect:rect fadeHead:self.fadeTruncatingMode & THLabelFadeTruncatingModeHead fadeTail:self.fadeTruncatingMode & THLabelFadeTruncatingModeTail];
-		CGContextClipToMask(context, self.bounds, linearGradientImage);
-		
-		// Draw the saved image, which is clipped by the linear gradient mask.
-		CGContextDrawImage(context, rect, image);
-		
-		// Clean up.
-		CGImageRelease(linearGradientImage);
-		CGImageRelease(image);
-		
-		CGContextRestoreGState(context);
-	}
-	
-	// -------
-	// Step 8: End drawing context and finally draw the text with all styles.
-	// -------
-	
-	UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
-	UIGraphicsEndImageContext();
-	[image drawInRect:rect];
-	
-	// -------
-	// Clean up.
-	// -------
-	
-	if (needsMask) {
-		CGImageRelease(alphaMask);
-	}
-	
-	CFRelease(frameRef);
+- (void)render {
+    if (isRendering) {
+        return;
+    }
+    
+    isRendering = YES;
+    
+    CGRect rect = self.bounds;
+    
+    // -------
+    // Determine what has to be drawn.
+    // -------
+    
+    BOOL hasShadow = [self hasShadow];
+    BOOL hasInnerShadow = [self hasInnerShadow];
+    BOOL hasStroke = [self hasStroke];
+    BOOL hasGradient = [self hasGradient];
+    BOOL hasFadeTruncating = [self hasFadeTruncating];
+    BOOL needsMask = hasGradient || (hasStroke && self.strokePosition == THLabelStrokePositionInside) || hasInnerShadow;
+    
+    // -------
+    // Step 1: Begin new drawing context, where we will apply all our styles.
+    // -------
+    
+    UIGraphicsBeginImageContextWithOptions(rect.size, NO, 0.0);
+    CGContextRef context = UIGraphicsGetCurrentContext();
+    CGContextClearRect(context, rect);
+    CGImageRef alphaMask = NULL;
+    CGRect textRect;
+    CTFrameRef frameRef = [self frameRefFromSize:self.bounds.size textRectOutput:&textRect];
+    
+    // Invert everything, because CG works with an inverted coordinate system.
+    CGContextTranslateCTM(context, 0.0, CGRectGetHeight(rect));
+    CGContextScaleCTM(context, 1.0, -1.0);
+    
+    // -------
+    // Step 2: Prepare mask.
+    // -------
+    
+    if (needsMask) {
+        CGContextSaveGState(context);
+        
+        // Draw alpha mask.
+        if (hasStroke) {
+            // Text needs invisible stroke for consistent character glyph widths.
+            CGContextSetTextDrawingMode(context, kCGTextFillStroke);
+            CGContextSetLineWidth(context, [self strokeSizeDependentOnStrokePosition]);
+            CGContextSetLineJoin(context, kCGLineJoinRound);
+            [[UIColor clearColor] setStroke];
+        } else {
+            CGContextSetTextDrawingMode(context, kCGTextFill);
+        }
+        
+        [[UIColor whiteColor] setFill];
+        CTFrameDraw(frameRef, context);
+        
+        // Save alpha mask.
+        alphaMask = CGBitmapContextCreateImage(context);
+        
+        // Clear the content.
+        CGContextClearRect(context, rect);
+        
+        CGContextRestoreGState(context);
+    }
+    
+    // -------
+    // Step 3: Draw text normally, or with gradient.
+    // -------
+    
+    CGContextSaveGState(context);
+    
+    if (!hasGradient) {
+        // Draw text.
+        if (hasStroke) {
+            // Text needs invisible stroke for consistent character glyph widths.
+            CGContextSetTextDrawingMode(context, kCGTextFillStroke);
+            CGContextSetLineWidth(context, [self strokeSizeDependentOnStrokePosition]);
+            CGContextSetLineJoin(context, kCGLineJoinRound);
+            [[UIColor clearColor] setStroke];
+        } else {
+            CGContextSetTextDrawingMode(context, kCGTextFill);
+        }
+        
+        CTFrameDraw(frameRef, context);
+    } else {
+        // Clip the current context to alpha mask.
+        CGContextClipToMask(context, rect, alphaMask);
+        
+        // Invert back to draw the gradient correctly.
+        CGContextTranslateCTM(context, 0.0, CGRectGetHeight(rect));
+        CGContextScaleCTM(context, 1.0, -1.0);
+        
+        // Get gradient colors as CGColor.
+        NSMutableArray *gradientColors = [NSMutableArray arrayWithCapacity:self.gradientColors.count];
+        for (UIColor *color in self.gradientColors) {
+            [gradientColors addObject:(__bridge id)color.CGColor];
+        }
+        
+        // Create gradient.
+        CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+        CGGradientRef gradient = CGGradientCreateWithColors(colorSpace, (__bridge CFArrayRef)gradientColors, NULL);
+        CGPoint startPoint = CGPointMake(textRect.origin.x + self.gradientStartPoint.x * CGRectGetWidth(textRect),
+                                         textRect.origin.y + self.gradientStartPoint.y * CGRectGetHeight(textRect));
+        CGPoint endPoint = CGPointMake(textRect.origin.x + self.gradientEndPoint.x * CGRectGetWidth(textRect),
+                                       textRect.origin.y + self.gradientEndPoint.y * CGRectGetHeight(textRect));
+        
+        // Draw gradient.
+        CGContextDrawLinearGradient(context, gradient, startPoint, endPoint, kCGGradientDrawsBeforeStartLocation | kCGGradientDrawsAfterEndLocation);
+        
+        // Clean up.
+        CGColorSpaceRelease(colorSpace);
+        CGGradientRelease(gradient);
+    }
+    
+    CGContextRestoreGState(context);
+    
+    // -------
+    // Step 4: Draw inner shadow.
+    // -------
+    
+    if (hasInnerShadow) {
+        CGContextSaveGState(context);
+        
+        // Clip the current context to alpha mask.
+        CGContextClipToMask(context, rect, alphaMask);
+        
+        // Invert to draw the inner shadow correctly.
+        CGContextTranslateCTM(context, 0.0, CGRectGetHeight(rect));
+        CGContextScaleCTM(context, 1.0, -1.0);
+        
+        // Draw inner shadow.
+        CGImageRef shadowImage = [self inverseMaskFromAlphaMask:alphaMask withRect:rect];
+        CGContextSetShadowWithColor(context, self.innerShadowOffset, self.innerShadowBlur, self.innerShadowColor.CGColor);
+        CGContextSetBlendMode(context, kCGBlendModeDarken);
+        CGContextDrawImage(context, rect, shadowImage);
+        
+        // Clean up.
+        CGImageRelease(shadowImage);
+        
+        CGContextRestoreGState(context);
+    }
+    
+    // -------
+    // Step 5: Draw stroke.
+    // -------
+    
+    if (hasStroke) {
+        CGContextSaveGState(context);
+        
+        CGContextSetTextDrawingMode(context, kCGTextStroke);
+        
+        CGImageRef image = NULL;
+        
+        if (self.strokePosition == THLabelStrokePositionOutside) {
+            // Create an image from the text.
+            image = CGBitmapContextCreateImage(context);
+        } else if (self.strokePosition == THLabelStrokePositionInside) {
+            // Clip the current context to alpha mask.
+            CGContextClipToMask(context, rect, alphaMask);
+        }
+        
+        // Draw stroke.
+        CGImageRef strokeImage = [self strokeImageWithRect:rect frameRef:frameRef strokeSize:[self strokeSizeDependentOnStrokePosition] strokeColor:self.strokeColor];
+        CGContextDrawImage(context, rect, strokeImage);
+        
+        if (self.strokePosition == THLabelStrokePositionOutside) {
+            // Draw the saved image over half of the stroke.
+            CGContextDrawImage(context, rect, image);
+        }
+        
+        // Clean up.
+        CGImageRelease(strokeImage);
+        CGImageRelease(image);
+        
+        CGContextRestoreGState(context);
+    }
+    
+    // -------
+    // Step 6: Draw shadow.
+    // -------
+    
+    if (hasShadow) {
+        CGContextSaveGState(context);
+        
+        // Create an image from the text.
+        CGImageRef image = CGBitmapContextCreateImage(context);
+        
+        // Clear the content.
+        CGContextClearRect(context, rect);
+        
+        // Set shadow attributes.
+        CGContextSetShadowWithColor(context, self.shadowOffset, self.shadowBlur, self.shadowColor.CGColor);
+        
+        // Draw the saved image, which throws off a shadow.
+        CGContextDrawImage(context, rect, image);
+        
+        // Clean up.
+        CGImageRelease(image);
+        
+        CGContextRestoreGState(context);
+    }
+    
+    // -------
+    // Step 7: Draw fade truncating.
+    // -------
+    
+    if (hasFadeTruncating) {
+        CGContextSaveGState(context);
+        
+        // Create an image from the text.
+        CGImageRef image = CGBitmapContextCreateImage(context);
+        
+        // Clear the content.
+        CGContextClearRect(context, rect);
+        
+        // Clip the current context to linear gradient mask.
+        CGImageRef linearGradientImage = [self linearGradientImageWithRect:rect fadeHead:self.fadeTruncatingMode & THLabelFadeTruncatingModeHead fadeTail:self.fadeTruncatingMode & THLabelFadeTruncatingModeTail];
+        CGContextClipToMask(context, self.bounds, linearGradientImage);
+        
+        // Draw the saved image, which is clipped by the linear gradient mask.
+        CGContextDrawImage(context, rect, image);
+        
+        // Clean up.
+        CGImageRelease(linearGradientImage);
+        CGImageRelease(image);
+        
+        CGContextRestoreGState(context);
+    }
+    
+    // -------
+    // Step 8: End drawing context and finally draw the text with all styles.
+    // -------
+    
+    UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    
+    self.image = image;
+    
+    //
+    
+    // -------
+    // Clean up.
+    // -------
+    
+    if (needsMask) {
+        CGImageRelease(alphaMask);
+    }
+    
+    CFRelease(frameRef);
+    
+    isRendering = NO;
+    
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self setNeedsDisplay];
+    });
 }
 
 - (CTFrameRef)frameRefFromSize:(CGSize)size textRectOutput:(CGRect *)textRectOutput CF_RETURNS_RETAINED {
