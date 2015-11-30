@@ -83,4 +83,7 @@ typedef NS_OPTIONS(NSUInteger, THLabelFadeTruncatingMode) {
 @property (nonatomic, assign) UIEdgeInsets textInsets;
 @property (nonatomic, assign) BOOL automaticallyAdjustTextInsets;
 
+- (void)render;
+- (void)renderInBackground;
+
 @end
